@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -6,10 +6,11 @@ import { Progress } from "@/components/ui/progress";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { CheckCircle, Trophy, Share2, RotateCcw, Play, Pause, Settings, Medal } from "lucide-react";
+import { CheckCircle, Trophy, Share2, RotateCcw, Play, Pause, Settings, Medal, Volume2, VolumeX, GraduationCap } from "lucide-react";
 import { type GameResult } from "@shared/schema";
 
 type GameState = 'ready' | 'playing' | 'paused' | 'completed';
+type GameMode = 'normal' | 'practice';
 type DifficultyLevel = 'beginner' | 'intermediate' | 'advanced' | 'expert';
 
 interface DifficultyConfig {
@@ -50,6 +51,111 @@ export default function SchulteGame() {
   const [showCompletionModal, setShowCompletionModal] = useState(false);
   const [showDifficultyModal, setShowDifficultyModal] = useState(false);
   const [showLeaderboardModal, setShowLeaderboardModal] = useState(false);
+  const [gameMode, setGameMode] = useState<GameMode>('normal');
+  const [soundEnabled, setSoundEnabled] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('schulte-sound-enabled') !== 'false';
+    }
+    return true;
+  });
+
+  // Shared audio context
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const masterGainRef = useRef<GainNode | null>(null);
+
+  // Initialize audio context lazily
+  const getAudioContext = useCallback(() => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      masterGainRef.current = audioContextRef.current.createGain();
+      masterGainRef.current.connect(audioContextRef.current.destination);
+    }
+    
+    // Resume context if suspended (required by some browsers)
+    if (audioContextRef.current.state === 'suspended') {
+      audioContextRef.current.resume();
+    }
+    
+    return audioContextRef.current;
+  }, []);
+
+  // Update master gain when sound setting changes
+  useEffect(() => {
+    if (masterGainRef.current) {
+      masterGainRef.current.gain.setValueAtTime(
+        soundEnabled ? 1 : 0,
+        masterGainRef.current.context.currentTime
+      );
+    }
+    // Save to localStorage
+    localStorage.setItem('schulte-sound-enabled', soundEnabled.toString());
+  }, [soundEnabled]);
+
+  // Clean up audio context on unmount
+  useEffect(() => {
+    return () => {
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+      }
+    };
+  }, []);
+
+  // Sound effects system
+  const playSound = useCallback((type: 'correct' | 'incorrect' | 'complete') => {
+    if (!soundEnabled) return;
+    
+    try {
+      const audioContext = getAudioContext();
+      if (!masterGainRef.current) return;
+      
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(masterGainRef.current);
+      
+      // Configure sound based on type
+      switch (type) {
+        case 'correct':
+          oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+          oscillator.frequency.exponentialRampToValueAtTime(1000, audioContext.currentTime + 0.1);
+          gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
+          oscillator.type = 'sine';
+          break;
+        case 'incorrect':
+          oscillator.frequency.setValueAtTime(300, audioContext.currentTime);
+          oscillator.frequency.exponentialRampToValueAtTime(200, audioContext.currentTime + 0.2);
+          gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+          oscillator.type = 'sawtooth';
+          break;
+        case 'complete':
+          // Victory fanfare with smoother transitions
+          oscillator.frequency.setValueAtTime(523, audioContext.currentTime); // C5
+          oscillator.frequency.linearRampToValueAtTime(659, audioContext.currentTime + 0.2); // E5
+          oscillator.frequency.linearRampToValueAtTime(784, audioContext.currentTime + 0.4); // G5
+          oscillator.frequency.linearRampToValueAtTime(1047, audioContext.currentTime + 0.6); // C6
+          gainNode.gain.setValueAtTime(0.15, audioContext.currentTime);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.8);
+          oscillator.type = 'triangle';
+          break;
+      }
+      
+      const duration = type === 'complete' ? 0.8 : type === 'incorrect' ? 0.2 : 0.1;
+      
+      // Clean up nodes after sound finishes
+      oscillator.onended = () => {
+        gainNode.disconnect();
+        oscillator.disconnect();
+      };
+      
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + duration);
+    } catch (error) {
+      console.warn('Audio playback failed:', error);
+    }
+  }, [soundEnabled, getAudioContext]);
 
   // Generate characters for grid based on difficulty
   const generateCharacters = useCallback((count: number): string[] => {
@@ -208,6 +314,7 @@ export default function SchulteGame() {
     
     if (character === expectedCharacter) {
       // Correct click
+      playSound('correct');
       const newClickedLetters = new Set(clickedLetters);
       newClickedLetters.add(character);
       setClickedLetters(newClickedLetters);
@@ -227,22 +334,30 @@ export default function SchulteGame() {
         });
         setShowCompletionModal(true);
         
-        // Save result
-        saveGameResult.mutate({ 
-          completionTime, 
-          difficulty, 
-          gridSize: config.gridSize 
-        });
+        // Play completion sound
+        playSound('complete');
+        
+        // Save result only in normal mode
+        if (gameMode === 'normal') {
+          saveGameResult.mutate({ 
+            completionTime, 
+            difficulty, 
+            gridSize: config.gridSize 
+          });
+        }
         
         toast({
-          title: "Congratulations!",
-          description: `You completed the ${config.name} challenge in ${formatTime(completionTime)}!`,
+          title: gameMode === 'practice' ? "Practice Complete!" : "Congratulations!",
+          description: gameMode === 'practice' 
+            ? `Great practice session! You completed in ${formatTime(completionTime)}. Ready for normal mode?`
+            : `You completed the ${config.name} challenge in ${formatTime(completionTime)}!`,
         });
       } else {
         setCurrentTarget(allCharacters[newProgress]);
       }
     } else {
       // Incorrect click
+      playSound('incorrect');
       toast({
         title: "Wrong character!",
         description: `Click on "${expectedCharacter}" next.`,
@@ -283,18 +398,44 @@ export default function SchulteGame() {
                 <div className="text-center md:text-left">
                   <div className="flex items-center gap-3 justify-center md:justify-start mb-2">
                     <h1 className="text-2xl md:text-3xl font-bold text-foreground">Schulte Grid Training</h1>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setShowDifficultyModal(true)}
-                      disabled={gameState === 'playing'}
-                      data-testid="button-difficulty"
-                    >
-                      <Settings className="w-4 h-4 mr-1" />
-                      {config.name}
-                    </Button>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowDifficultyModal(true)}
+                        disabled={gameState === 'playing'}
+                        data-testid="button-difficulty"
+                      >
+                        <Settings className="w-4 h-4 mr-1" />
+                        {config.name}
+                      </Button>
+                      
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSoundEnabled(!soundEnabled)}
+                        data-testid="button-sound-toggle"
+                        title={soundEnabled ? "Disable sound" : "Enable sound"}
+                      >
+                        {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                      </Button>
+                      
+                      <Button
+                        variant={gameMode === 'practice' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => setGameMode(gameMode === 'practice' ? 'normal' : 'practice')}
+                        disabled={gameState === 'playing'}
+                        data-testid="button-practice-toggle"
+                        title={gameMode === 'practice' ? "Switch to normal mode" : "Switch to practice mode"}
+                      >
+                        <GraduationCap className="w-4 h-4" />
+                      </Button>
+                    </div>
                   </div>
-                  <p className="text-muted-foreground">{config.description}</p>
+                  <p className="text-muted-foreground">
+                    {config.description}
+                    {gameMode === 'practice' && <span className="ml-2 text-primary font-semibold">• Practice Mode</span>}
+                  </p>
                 </div>
                 
                 {/* Timer & Stats */}
@@ -344,8 +485,8 @@ export default function SchulteGame() {
                       className={`aspect-square ${config.gridSize > 10 ? 'text-sm md:text-base' : config.gridSize > 5 ? 'text-lg md:text-xl' : 'text-2xl md:text-3xl'} font-bold transition-all duration-150 hover:scale-105 ${
                         isClicked
                           ? 'bg-success text-success-foreground hover:bg-success/90'
-                          : isTarget && gameState === 'playing'
-                          ? 'ring-2 ring-warning ring-offset-2 animate-pulse'
+                          : isTarget && gameState === 'playing' && gameMode === 'practice'
+                          ? 'bg-warning text-warning-foreground ring-2 ring-warning ring-offset-2 animate-pulse'
                           : 'bg-secondary hover:bg-accent'
                       }`}
                       onClick={() => handleCellClick(letter)}
@@ -370,8 +511,15 @@ export default function SchulteGame() {
                 {/* Game Instructions */}
                 <div className="text-center md:text-left">
                   <p className="text-muted-foreground text-sm md:text-base">
-                    Click the characters in order as they appear.{' '}
+                    {gameMode === 'practice' 
+                      ? 'Practice mode: Target character is highlighted. Take your time to learn the sequence!' 
+                      : 'Click the characters in order as they appear.'}{' '}
                     <span className="text-warning font-semibold">Current target: {currentTarget}</span>
+                    {gameMode === 'practice' && (
+                      <span className="block text-xs text-muted-foreground mt-1">
+                        💡 Tip: In practice mode, the target character is highlighted in yellow to help you learn.
+                      </span>
+                    )}
                   </p>
                 </div>
                 
