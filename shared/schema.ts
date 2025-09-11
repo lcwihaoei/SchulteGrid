@@ -12,6 +12,8 @@ export const users = pgTable("users", {
 export const gameResults = pgTable("game_results", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   completionTime: integer("completion_time").notNull(), // in milliseconds
+  difficulty: varchar("difficulty").notNull().default('beginner'),
+  gridSize: integer("grid_size").notNull().default(5),
   userId: varchar("user_id"),
   createdAt: timestamp("created_at").defaultNow(),
 });
@@ -23,6 +25,8 @@ export const insertUserSchema = createInsertSchema(users).pick({
 
 export const insertGameResultSchema = createInsertSchema(gameResults).pick({
   completionTime: true,
+  difficulty: true,
+  gridSize: true,
   userId: true,
 });
 

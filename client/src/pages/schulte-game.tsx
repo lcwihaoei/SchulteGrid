@@ -6,20 +6,40 @@ import { Progress } from "@/components/ui/progress";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { CheckCircle, Trophy, Share2, RotateCcw, Play, Pause } from "lucide-react";
+import { CheckCircle, Trophy, Share2, RotateCcw, Play, Pause, Settings, Medal } from "lucide-react";
+import { type GameResult } from "@shared/schema";
 
 type GameState = 'ready' | 'playing' | 'paused' | 'completed';
+type DifficultyLevel = 'beginner' | 'intermediate' | 'advanced' | 'expert';
+
+interface DifficultyConfig {
+  name: string;
+  gridSize: number;
+  letterCount: number;
+  description: string;
+}
 
 interface GameStats {
   completionTime: number;
   performance: string;
+  difficulty: DifficultyLevel;
+  gridSize: number;
 }
 
 export default function SchulteGame() {
   const { toast } = useToast();
   
+  // Difficulty configurations
+  const difficultyConfigs: Record<DifficultyLevel, DifficultyConfig> = {
+    beginner: { name: 'Beginner', gridSize: 5, letterCount: 25, description: '5×5 grid with letters A-Y' },
+    intermediate: { name: 'Intermediate', gridSize: 10, letterCount: 100, description: '10×10 grid with A-Z, 0-9, a-z + more' },
+    advanced: { name: 'Advanced', gridSize: 15, letterCount: 225, description: '15×15 grid with extended character set' },
+    expert: { name: 'Expert', gridSize: 25, letterCount: 625, description: '25×25 grid - Ultimate challenge' }
+  };
+
   // Game state
   const [gameState, setGameState] = useState<GameState>('ready');
+  const [difficulty, setDifficulty] = useState<DifficultyLevel>('beginner');
   const [startTime, setStartTime] = useState<number | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [currentTarget, setCurrentTarget] = useState('A');
@@ -28,13 +48,57 @@ export default function SchulteGame() {
   const [clickedLetters, setClickedLetters] = useState<Set<string>>(new Set());
   const [gameStats, setGameStats] = useState<GameStats | null>(null);
   const [showCompletionModal, setShowCompletionModal] = useState(false);
+  const [showDifficultyModal, setShowDifficultyModal] = useState(false);
+  const [showLeaderboardModal, setShowLeaderboardModal] = useState(false);
 
-  // Generate random grid
-  const generateGrid = useCallback(() => {
-    const letters = Array.from({ length: 25 }, (_, i) => String.fromCharCode(65 + i)); // A-Y
-    const shuffled = [...letters].sort(() => Math.random() - 0.5);
-    setGridLetters(shuffled);
+  // Generate characters for grid based on difficulty
+  const generateCharacters = useCallback((count: number): string[] => {
+    const characters: string[] = [];
+    
+    // Add letters A-Z first
+    for (let i = 0; i < Math.min(count, 26); i++) {
+      characters.push(String.fromCharCode(65 + i));
+    }
+    
+    // If we need more characters, add numbers
+    if (count > 26) {
+      for (let i = 0; i < Math.min(count - 26, 10); i++) {
+        characters.push(i.toString());
+      }
+    }
+    
+    // If still need more, add lowercase letters
+    if (count > 36) {
+      for (let i = 0; i < Math.min(count - 36, 26); i++) {
+        characters.push(String.fromCharCode(97 + i));
+      }
+    }
+    
+    // If still need more, add symbols
+    const symbols = ['!', '@', '#', '$', '%', '^', '&', '*', '+', '-', '='];
+    if (count > 62) {
+      for (let i = 0; i < Math.min(count - 62, symbols.length); i++) {
+        characters.push(symbols[i]);
+      }
+    }
+    
+    // Fill remaining with combinations
+    while (characters.length < count) {
+      const base = characters.length % 26;
+      const suffix = Math.floor(characters.length / 26);
+      characters.push(`${String.fromCharCode(65 + base)}${suffix}`);
+    }
+    
+    return characters.slice(0, count);
   }, []);
+
+  // Generate random grid function
+  const generateGrid = useCallback(() => {
+    const config = difficultyConfigs[difficulty];
+    const characters = generateCharacters(config.letterCount);
+    const shuffled = [...characters].sort(() => Math.random() - 0.5);
+    setGridLetters(shuffled);
+  }, [difficulty, generateCharacters]);
 
   // Timer effect
   useEffect(() => {
@@ -51,18 +115,22 @@ export default function SchulteGame() {
     };
   }, [gameState, startTime]);
 
-  // Initialize grid on mount
+  // Initialize grid when difficulty changes
   useEffect(() => {
-    generateGrid();
-  }, [generateGrid]);
+    const config = difficultyConfigs[difficulty];
+    const characters = generateCharacters(config.letterCount);
+    const shuffled = [...characters].sort(() => Math.random() - 0.5);
+    setGridLetters(shuffled);
+  }, [difficulty, generateCharacters]);
 
   // Save game result mutation
   const saveGameResult = useMutation({
-    mutationFn: async (completionTime: number) => {
-      return apiRequest('POST', '/api/game-results', { completionTime });
+    mutationFn: async (data: { completionTime: number; difficulty: string; gridSize: number }) => {
+      return apiRequest('POST', '/api/game-results', data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/game-results/best'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/game-results/best', difficulty] });
     },
   });
 
@@ -72,17 +140,27 @@ export default function SchulteGame() {
     enabled: gameState === 'completed',
   });
 
+  // Get best times for current difficulty
+  const { data: bestTimesByDifficulty = [] } = useQuery<GameResult[]>({
+    queryKey: ['/api/game-results/best', difficulty],
+    queryFn: () => fetch(`/api/game-results/best/${difficulty}`).then(res => res.json()),
+    enabled: showLeaderboardModal,
+  });
+
   const formatTime = (milliseconds: number): string => {
     const seconds = Math.floor(milliseconds / 1000);
     const ms = Math.floor((milliseconds % 1000) / 10);
     return `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
   };
 
-  const calculatePerformance = (time: number): string => {
-    if (time < 30000) return "Outstanding";
-    if (time < 60000) return "Excellent";
-    if (time < 90000) return "Good";
-    if (time < 120000) return "Average";
+  const calculatePerformance = (time: number, difficulty: DifficultyLevel): string => {
+    const config = difficultyConfigs[difficulty];
+    const baseTime = config.letterCount * 1000; // 1 second per character as baseline
+    
+    if (time < baseTime * 0.3) return "Outstanding";
+    if (time < baseTime * 0.6) return "Excellent";
+    if (time < baseTime * 0.9) return "Good";
+    if (time < baseTime * 1.2) return "Average";
     return "Keep Practicing";
   };
 
@@ -90,7 +168,9 @@ export default function SchulteGame() {
     setGameState('playing');
     setStartTime(Date.now());
     setCurrentTime(0);
-    setCurrentTarget('A');
+    const config = difficultyConfigs[difficulty];
+    const firstChar = generateCharacters(config.letterCount)[0];
+    setCurrentTarget(firstChar);
     setProgress(0);
     setClickedLetters(new Set());
     generateGrid();
@@ -110,52 +190,62 @@ export default function SchulteGame() {
     setGameState('ready');
     setStartTime(null);
     setCurrentTime(0);
-    setCurrentTarget('A');
+    const config = difficultyConfigs[difficulty];
+    const firstChar = generateCharacters(config.letterCount)[0];
+    setCurrentTarget(firstChar);
     setProgress(0);
     setClickedLetters(new Set());
     setShowCompletionModal(false);
     generateGrid();
   };
 
-  const handleCellClick = (letter: string) => {
+  const handleCellClick = (character: string) => {
     if (gameState !== 'playing') return;
 
-    const expectedLetter = String.fromCharCode(65 + progress);
+    const config = difficultyConfigs[difficulty];
+    const allCharacters = generateCharacters(config.letterCount);
+    const expectedCharacter = allCharacters[progress];
     
-    if (letter === expectedLetter) {
+    if (character === expectedCharacter) {
       // Correct click
       const newClickedLetters = new Set(clickedLetters);
-      newClickedLetters.add(letter);
+      newClickedLetters.add(character);
       setClickedLetters(newClickedLetters);
       
       const newProgress = progress + 1;
       setProgress(newProgress);
       
-      if (newProgress === 25) {
+      if (newProgress === config.letterCount) {
         // Game completed
         const completionTime = currentTime;
         setGameState('completed');
         setGameStats({
           completionTime,
-          performance: calculatePerformance(completionTime)
+          performance: calculatePerformance(completionTime, difficulty),
+          difficulty,
+          gridSize: config.gridSize
         });
         setShowCompletionModal(true);
         
         // Save result
-        saveGameResult.mutate(completionTime);
+        saveGameResult.mutate({ 
+          completionTime, 
+          difficulty, 
+          gridSize: config.gridSize 
+        });
         
         toast({
           title: "Congratulations!",
-          description: `You completed the challenge in ${formatTime(completionTime)}!`,
+          description: `You completed the ${config.name} challenge in ${formatTime(completionTime)}!`,
         });
       } else {
-        setCurrentTarget(String.fromCharCode(65 + newProgress));
+        setCurrentTarget(allCharacters[newProgress]);
       }
     } else {
       // Incorrect click
       toast({
-        title: "Wrong letter!",
-        description: `Click on "${expectedLetter}" next.`,
+        title: "Wrong character!",
+        description: `Click on "${expectedCharacter}" next.`,
         variant: "destructive",
       });
     }
@@ -176,7 +266,8 @@ export default function SchulteGame() {
     }
   };
 
-  const progressPercentage = (progress / 25) * 100;
+  const config = difficultyConfigs[difficulty];
+  const progressPercentage = (progress / config.letterCount) * 100;
 
   return (
     <div className="min-h-screen bg-background font-sans">
@@ -190,8 +281,20 @@ export default function SchulteGame() {
                 
                 {/* Game Title & Status */}
                 <div className="text-center md:text-left">
-                  <h1 className="text-2xl md:text-3xl font-bold text-foreground mb-2">Schulte Grid Training</h1>
-                  <p className="text-muted-foreground">Click letters A through Y in alphabetical order</p>
+                  <div className="flex items-center gap-3 justify-center md:justify-start mb-2">
+                    <h1 className="text-2xl md:text-3xl font-bold text-foreground">Schulte Grid Training</h1>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowDifficultyModal(true)}
+                      disabled={gameState === 'playing'}
+                      data-testid="button-difficulty"
+                    >
+                      <Settings className="w-4 h-4 mr-1" />
+                      {config.name}
+                    </Button>
+                  </div>
+                  <p className="text-muted-foreground">{config.description}</p>
                 </div>
                 
                 {/* Timer & Stats */}
@@ -210,7 +313,7 @@ export default function SchulteGame() {
                   </div>
                   <div className="text-center">
                     <div className="text-3xl font-bold text-success" data-testid="progress">
-                      {progress}/25
+                      {progress}/{config.letterCount}
                     </div>
                     <div className="text-sm text-muted-foreground">Progress</div>
                   </div>
@@ -229,7 +332,7 @@ export default function SchulteGame() {
         <div className="w-full max-w-4xl mb-6">
           <Card>
             <CardContent className="p-6">
-              <div className="grid grid-cols-5 gap-2 md:gap-3 max-w-2xl mx-auto">
+              <div className={`grid gap-1 md:gap-2 mx-auto`} style={{ gridTemplateColumns: `repeat(${config.gridSize}, minmax(0, 1fr))`, maxWidth: `${Math.min(config.gridSize * 60, 800)}px` }}>
                 {gridLetters.map((letter, index) => {
                   const isClicked = clickedLetters.has(letter);
                   const isTarget = letter === currentTarget;
@@ -238,7 +341,7 @@ export default function SchulteGame() {
                     <Button
                       key={index}
                       variant="outline"
-                      className={`aspect-square text-2xl md:text-3xl font-bold transition-all duration-150 hover:scale-105 ${
+                      className={`aspect-square ${config.gridSize > 10 ? 'text-sm md:text-base' : config.gridSize > 5 ? 'text-lg md:text-xl' : 'text-2xl md:text-3xl'} font-bold transition-all duration-150 hover:scale-105 ${
                         isClicked
                           ? 'bg-success text-success-foreground hover:bg-success/90'
                           : isTarget && gameState === 'playing'
@@ -267,7 +370,7 @@ export default function SchulteGame() {
                 {/* Game Instructions */}
                 <div className="text-center md:text-left">
                   <p className="text-muted-foreground text-sm md:text-base">
-                    Click the letters in alphabetical order from A to Y.{' '}
+                    Click the characters in order as they appear.{' '}
                     <span className="text-warning font-semibold">Current target: {currentTarget}</span>
                   </p>
                 </div>
@@ -289,6 +392,11 @@ export default function SchulteGame() {
                   <Button onClick={resetGame} variant="outline" data-testid="button-reset">
                     <RotateCcw className="w-4 h-4 mr-2" />
                     Reset
+                  </Button>
+                  
+                  <Button onClick={() => setShowLeaderboardModal(true)} variant="outline" data-testid="button-leaderboard">
+                    <Medal className="w-4 h-4 mr-2" />
+                    Leaderboard
                   </Button>
                 </div>
               </div>
@@ -323,8 +431,13 @@ export default function SchulteGame() {
                   </div>
                   
                   <div className="flex justify-between items-center p-3 bg-muted rounded-md">
-                    <span className="text-muted-foreground">Letters Clicked</span>
-                    <span className="text-lg font-semibold text-foreground">25/25</span>
+                    <span className="text-muted-foreground">Characters Clicked</span>
+                    <span className="text-lg font-semibold text-foreground">{config.letterCount}/{config.letterCount}</span>
+                  </div>
+                  
+                  <div className="flex justify-between items-center p-3 bg-muted rounded-md">
+                    <span className="text-muted-foreground">Difficulty Level</span>
+                    <span className="text-lg font-semibold text-primary">{gameStats.difficulty}</span>
                   </div>
                   
                   <div className="flex justify-between items-center p-3 bg-muted rounded-md">
@@ -349,6 +462,114 @@ export default function SchulteGame() {
                 </div>
               </>
             )}
+          </DialogContent>
+        </Dialog>
+        
+        {/* Difficulty Selection Modal */}
+        <Dialog open={showDifficultyModal} onOpenChange={setShowDifficultyModal}>
+          <DialogContent className="w-full max-w-2xl" data-testid="difficulty-modal">
+            <DialogHeader>
+              <DialogTitle className="text-2xl font-bold text-center mb-4">
+                Select Difficulty Level
+              </DialogTitle>
+            </DialogHeader>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+              {Object.entries(difficultyConfigs).map(([key, config]) => (
+                <Button
+                  key={key}
+                  variant={difficulty === key ? "default" : "outline"}
+                  className="h-auto p-4 text-left justify-start"
+                  onClick={() => {
+                    const newDifficulty = key as DifficultyLevel;
+                    setDifficulty(newDifficulty);
+                    setShowDifficultyModal(false);
+                    // Reset game state for new difficulty
+                    setGameState('ready');
+                    setStartTime(null);
+                    setCurrentTime(0);
+                    const newConfig = difficultyConfigs[newDifficulty];
+                    const firstChar = generateCharacters(newConfig.letterCount)[0];
+                    setCurrentTarget(firstChar);
+                    setProgress(0);
+                    setClickedLetters(new Set());
+                    setShowCompletionModal(false);
+                  }}
+                  data-testid={`difficulty-${key}`}
+                >
+                  <div className="flex flex-col gap-1">
+                    <div className="font-bold text-lg">{config.name}</div>
+                    <div className="text-sm text-muted-foreground">{config.description}</div>
+                    <div className="text-xs text-primary">
+                      {config.gridSize}×{config.gridSize} grid • {config.letterCount} characters
+                    </div>
+                  </div>
+                </Button>
+              ))}
+            </div>
+            
+            <div className="text-center text-sm text-muted-foreground">
+              You can change difficulty anytime when the game is not in progress.
+            </div>
+          </DialogContent>
+        </Dialog>
+        
+        {/* Leaderboard Modal */}
+        <Dialog open={showLeaderboardModal} onOpenChange={setShowLeaderboardModal}>
+          <DialogContent className="w-full max-w-2xl" data-testid="leaderboard-modal">
+            <DialogHeader>
+              <DialogTitle className="text-2xl font-bold text-center mb-4">
+                <Medal className="inline w-6 h-6 mr-2 text-yellow-500" />
+                Leaderboard - {difficultyConfigs[difficulty].name}
+              </DialogTitle>
+            </DialogHeader>
+            
+            <div className="space-y-4">
+              {bestTimesByDifficulty && bestTimesByDifficulty.length > 0 ? (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-12 gap-2 text-sm font-bold text-muted-foreground border-b pb-2">
+                    <div className="col-span-1">#</div>
+                    <div className="col-span-6">Time</div>
+                    <div className="col-span-3">Grid</div>
+                    <div className="col-span-2">Date</div>
+                  </div>
+                  {bestTimesByDifficulty.map((result: any, index: number) => (
+                    <div key={result.id} className="grid grid-cols-12 gap-2 text-sm items-center py-2 hover:bg-muted/50 rounded">
+                      <div className="col-span-1 font-bold">
+                        {index === 0 && <span className="text-yellow-500">🥇</span>}
+                        {index === 1 && <span className="text-gray-400">🥈</span>}
+                        {index === 2 && <span className="text-amber-600">🥉</span>}
+                        {index > 2 && <span className="text-muted-foreground">{index + 1}</span>}
+                      </div>
+                      <div className="col-span-6 font-mono font-bold text-primary" data-testid={`leaderboard-time-${index}`}>
+                        {formatTime(result.completionTime)}
+                      </div>
+                      <div className="col-span-3 text-muted-foreground">
+                        {result.gridSize}×{result.gridSize}
+                      </div>
+                      <div className="col-span-2 text-xs text-muted-foreground">
+                        {result.createdAt ? new Date(result.createdAt).toLocaleDateString() : 'Today'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <Trophy className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                  <p className="text-muted-foreground">No records yet for {difficultyConfigs[difficulty].name} difficulty.</p>
+                  <p className="text-sm text-muted-foreground mt-2">Complete a game to set your first record!</p>
+                </div>
+              )}
+            </div>
+            
+            <div className="flex justify-between items-center pt-4 border-t">
+              <div className="text-sm text-muted-foreground">
+                Showing top {bestTimesByDifficulty?.length || 0} results
+              </div>
+              <Button onClick={() => setShowLeaderboardModal(false)} data-testid="button-close-leaderboard">
+                Close
+              </Button>
+            </div>
           </DialogContent>
         </Dialog>
       </div>

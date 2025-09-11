@@ -26,6 +26,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get best times by difficulty
+  app.get("/api/game-results/best/:difficulty", async (req, res) => {
+    try {
+      const difficulty = req.params.difficulty;
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 10;
+      const bestTimes = await storage.getBestTimesByDifficulty(difficulty, limit);
+      res.json(bestTimes);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch best times by difficulty" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }
