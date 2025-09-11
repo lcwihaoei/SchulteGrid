@@ -473,7 +473,11 @@ export default function SchulteGame() {
         <div className="w-full max-w-4xl mb-6">
           <Card>
             <CardContent className="p-6">
-              <div className={`grid gap-1 md:gap-2 mx-auto`} style={{ gridTemplateColumns: `repeat(${config.gridSize}, minmax(0, 1fr))`, maxWidth: `${Math.min(config.gridSize * 60, 800)}px` }}>
+              <div className={`grid gap-1 mx-auto`} style={{ 
+                gridTemplateColumns: `repeat(${config.gridSize}, 1fr)`, 
+                width: `${Math.min(config.gridSize * 50 + (config.gridSize - 1) * 4, 600)}px`,
+                aspectRatio: '1 / 1'
+              }}>
                 {gridLetters.map((letter, index) => {
                   const isClicked = clickedLetters.has(letter);
                   const isTarget = letter === currentTarget;
@@ -482,7 +486,7 @@ export default function SchulteGame() {
                     <Button
                       key={index}
                       variant="outline"
-                      className={`aspect-square ${config.gridSize > 10 ? 'text-sm md:text-base' : config.gridSize > 5 ? 'text-lg md:text-xl' : 'text-2xl md:text-3xl'} font-bold transition-all duration-150 hover:scale-105 ${
+                      className={`w-full h-full aspect-square min-w-0 min-h-0 flex items-center justify-center ${config.gridSize > 10 ? 'text-xs sm:text-sm' : config.gridSize > 5 ? 'text-sm sm:text-base' : 'text-lg sm:text-xl'} font-bold transition-all duration-150 hover:scale-105 ${
                         isClicked
                           ? 'bg-success text-success-foreground hover:bg-success/90'
                           : isTarget && gameState === 'playing' && gameMode === 'practice'
